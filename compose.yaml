@@ -10,11 +10,27 @@ services:
       - 6333
       - 6334
       - 6335
-    configs:
+    configs: 
       - source: qdrant_config
         target: /qdrant/config/production.yaml
     volumes:
       - ./qdrant_data:/qdrant/storage
+
+  ollama:
+    container_name: ollama
+    image: ollama/ollama
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            capabilities: ["gpu"]
+            count: 1  # Adjust count for the number of GPUs you want to use
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama:/root/.ollama
 
 configs:
   qdrant_config:
