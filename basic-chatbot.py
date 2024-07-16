@@ -12,6 +12,8 @@ from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_community.tools import ShellTool
 from langchain_community.utilities import ArxivAPIWrapper
 from langchain_community.tools.pubmed.tool import PubmedQueryRun
+from langchain_community.agent_toolkits.github.toolkit import GitHubToolkit
+from langchain_community.utilities.github import GitHubAPIWrapper
 
 load_dotenv()
 
@@ -39,3 +41,8 @@ yahoo_finance = YahooFinanceNewsTool()
 py_code_executor = PythonREPLTool()
 file_management_tool = FileManagementToolkit()
 shell_tool = ShellTool()
+
+# GitHub Toolkit
+github = GitHubAPIWrapper()
+gh_toolkit = GitHubToolkit.from_github_api_wrapper(github)
+gh_tools = gh_toolkit.get_tools()
