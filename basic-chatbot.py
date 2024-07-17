@@ -59,11 +59,7 @@ def set_agent_tools():
     gh_toolkit = GitHubToolkit.from_github_api_wrapper(github)
     gh_tools = gh_toolkit.get_tools()
 
-    tools = []
-
-    for tool in gh_tools:
-        tools.append(tool)
-
+    tools = list(gh_tools)
     tools += [
         Tool(
             name="Search",
