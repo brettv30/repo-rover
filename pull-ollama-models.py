@@ -1,18 +1,17 @@
 import os
 import ollama
+from ollama import Client
 import time
 
 # Get the Ollama host from environment variable
 ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-
-# Set the Ollama host to match the Docker Container
-ollama.set_host(ollama_host)
+client = Client(host=ollama_host)
 
 
 def is_model_available(model_name):
     try:
         # Try to get model info
-        ollama.show(model_name)
+        client.show(model_name)
         return True
     except Exception:
         return False
@@ -26,7 +25,7 @@ def pull_model_with_retry(model_name, max_retries=5, delay=10):
     for attempt in range(max_retries):
         try:
             print(f"Attempting to pull {model_name}...")
-            ollama.pull(model_name)
+            client.pull(model_name)
             print(f"Successfully pulled {model_name}")
             return
         except Exception as e:
