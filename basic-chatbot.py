@@ -1,19 +1,12 @@
 import os
 from dotenv import load_dotenv
-from langchain_experimental.tools import PythonREPLTool
+from langchain.agents import Tool
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_community.utilities import TextRequestsWrapper
-from langchain.tools import WikipediaQueryRun
-from langchain_community.utilities import WikipediaAPIWrapper
-from langchain_community.tools import YouTubeSearchTool
-from langchain_community.tools.yahoo_finance_news import YahooFinanceNewsTool
-from ionic_langchain.tool import Ionic, IonicTool
-from langchain_community.agent_toolkits import FileManagementToolkit
-from langchain_community.tools import ShellTool
-from langchain_community.utilities import ArxivAPIWrapper
-from langchain_community.tools.pubmed.tool import PubmedQueryRun
 from langchain_community.agent_toolkits.github.toolkit import GitHubToolkit
 from langchain_community.utilities.github import GitHubAPIWrapper
+from langchain import hub
+from langgraph.prebuilt import create_react_agent
+from langchain_openai import ChatOpenAI
 
 load_dotenv()
 
@@ -23,26 +16,46 @@ def set_environment_variables():
     os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT")
     os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
     os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+    os.environ["GITHUB_APP_ID"] = os.getenv("GITHUB_APP_ID")
+    os.environ["GITHUB_APP_PRIVATE_KEY"] = os.getenv("GITHUB_APP_PRIVATE_KEY")
+    os.environ["GITHUB_REPOSITORY"] = os.getenv("GITHUB_REPOSITORY")
+    os.environ["GITHUB_BRANCH"] = os.getenv("GITHUB_BRANCH")
+    os.environ["GITHUB_BASE_BRANCH"] = os.getenv("GITHUB_BASE_BRANCH")
 
 
-# Research Tools
-ddg_search = DuckDuckGoSearchRun()
-wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
-arxiv = ArxivAPIWrapper()
-requests = TextRequestsWrapper()
-pubmed = PubmedQueryRun()
+def set_agent_tools():
+    # GitHub Toolkit
+    github = GitHubAPIWrapper()
+    gh_toolkit = GitHubToolkit.from_github_api_wrapper(github)
+    gh_tools = gh_toolkit.get_tools()
 
-# Niche Tools
-ionic_tool = IonicTool().tool()
-youtube = YouTubeSearchTool()
-yahoo_finance = YahooFinanceNewsTool()
+    tools = []
 
-# Code/File Management Tools
-py_code_executor = PythonREPLTool()
-file_management_tool = FileManagementToolkit()
-shell_tool = ShellTool()
+    for tool in gh_tools:
+        tools.append(tool)
 
-# GitHub Toolkit
-github = GitHubAPIWrapper()
-gh_toolkit = GitHubToolkit.from_github_api_wrapper(github)
-gh_tools = gh_toolkit.get_tools()
+    tools += [
+        Tool(
+            name="Search",
+            func=DuckDuckGoSearchRun().run,
+            description="Use this tool when you need to search the web to help answer a question or solve a problem.",
+        )
+    ]
+
+    return tools
+
+
+def set_execution_agent(tools):
+    prompt = hub.pull("repo-rover-execution-agent-prompt")
+
+    # Choose the LLM that will drive the agent
+    llm = ChatOpenAI(model="gpt-3.5-turbo")
+    agent_executor = create_react_agent(llm, tools, messages_modifier=prompt)
+    return agent_executor
+
+
+if __name__ == "__main__":
+    set_environment_variables()
+    tools = set_agent_tools()
+    agent_executor = set_execution_agent(tools)
+    agent_executor.invoke({"messages": [("user", "who is the winnner of the us open")]})
