@@ -1,5 +1,4 @@
 import os
-import ollama
 from ollama import Client
 import time
 
