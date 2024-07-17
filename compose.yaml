@@ -15,6 +15,8 @@ services:
         target: /qdrant/config/production.yaml
     volumes:
       - ./qdrant_data:/qdrant/storage
+    networks:
+      - my-network
 
   ollama:
     container_name: ollama
@@ -29,16 +31,22 @@ services:
               count: 1 # Adjust count for the number of GPUs you want to use
     ports:
       - "11434:11434"
+    expose:
+      - 11434
     volumes:
       - ./ollama:/root/.ollama
+    networks:
+      - my-network
 
   model-puller:
     build: .
     depends_on:
       - ollama
     environment:
-      - OLLAMA_HOST=http://localhost:11434
+      - OLLAMA_HOST=http://ollama:11434
     restart: on-failure
+    networks:
+      - my-network
 
 configs:
   qdrant_config:

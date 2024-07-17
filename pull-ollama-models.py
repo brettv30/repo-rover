@@ -16,7 +16,7 @@ def is_model_available(model_name):
         return False
 
 
-def pull_model_with_retry(model_name, max_retries=5, delay=10):
+def pull_model_with_retry(model_name, max_retries=5, delay=60):
     if is_model_available(model_name):
         print(f"Model {model_name} is already available. Skipping pull.")
         return
