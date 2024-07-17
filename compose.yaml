@@ -1,4 +1,21 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: always
+    container_name: qdrant
+    ports:
+      - 6333:6333
+      - 6334:6334
+    expose:
+      - 6333
+      - 6334
+      - 6335
+    configs:
+      - source: qdrant_config
+        target: /qdrant/config/production.yaml
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+
   ollama:
     container_name: ollama
     image: ollama/ollama
@@ -14,3 +31,16 @@ services:
       - "11434:11434"
     volumes:
       - ./ollama:/root/.ollama
+
+  model-puller:
+    build: .
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://localhost:11434
+    restart: on-failure
+
+configs:
+  qdrant_config:
+    content: |
+      log_level: INFO      
