@@ -55,6 +55,12 @@ services:
       - ollama
       - model-puller
     restart: on-failure
+    ports:
+      - "420:420"
+    expose:
+      - 420
+    stdin_open: true
+    tty: true
     networks:
       - my-network
 
