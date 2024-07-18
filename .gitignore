@@ -169,3 +169,6 @@ ollama/
 
 # Private Key
 repo-rover-app.2024-07-15.private-key.pem
+
+# Secrets
+secrets/
