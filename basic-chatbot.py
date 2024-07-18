@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tempfile
 import uuid
 from dotenv import load_dotenv
 from langchain.agents import Tool
@@ -9,10 +10,10 @@ from langchain_community.utilities.github import GitHubAPIWrapper
 from langchain import hub
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from langchain.vectorstores import Qdrant
+from langchain_community.vectorstores import Qdrant
 from qdrant_client import QdrantClient
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from langchain.document_loaders import DirectoryLoader, NotebookLoader
+from langchain_community.document_loaders import DirectoryLoader, NotebookLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 load_dotenv()
@@ -25,19 +26,27 @@ def set_environment_variables():
     os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
     os.environ["GITHUB_APP_ID"] = os.getenv("GITHUB_APP_ID")
     os.environ["GITHUB_APP_PRIVATE_KEY"] = os.getenv("GITHUB_APP_PRIVATE_KEY")
-    os.environ["GITHUB_REPOSITORY"] = os.getenv("GITHUB_REPOSITORY")
-    os.environ["GITHUB_BRANCH"] = os.getenv("GITHUB_BRANCH")
-    os.environ["GITHUB_BASE_BRANCH"] = os.getenv("GITHUB_BASE_BRANCH")
+    os.environ["GITHUB_BRANCH"] = "repo-rover-branch"
+    os.environ["GITHUB_BASE_BRANCH"] = "main"
 
 
 def set_github_repository(repo_link):
     github_url = repo_link
     repo_name = github_url.split("/")[-1]
+    os.environ["GITHUB_REPOSITORY"] = repo_name
 
 
-def clone_github_repo(github_url, local_path):
+def clone_repo(repo_url, tmpdirname):
+    print(f"Cloning into temporary directory: {tmpdirname}")
+
+    # Run the git clone command
     try:
-        subprocess.run(["git", "clone", github_url, local_path], check=True)
+        result = subprocess.run(
+            ["git", "clone", repo_url, tmpdirname], capture_output=True, text=True
+        )
+        # Check if the command was successful
+        if result.returncode == 0:
+            print("Repository cloned successfully.")
         return True
     except subprocess.CalledProcessError as e:
         print(f"Failed to clone repository: {e}")
@@ -96,10 +105,12 @@ def embed_documents(split_documents, embeddings_model):
     embeddings = []
     for split_doc in split_documents:
         content = split_doc.page_content
-        embedding = embeddings_model.embed_query([content])[
+        embedding = embeddings_model.embed_documents([content])[
             0
         ]  # Get the embedding for the document chunk
         embeddings.append((split_doc, embedding))
+        print(embeddings)
+        print(len(embeddings[0][1]))
     return embeddings
 
 
@@ -107,7 +118,7 @@ def index_in_qdrant(embeddings, qdrant_client, collection_name):
     qdrant_client.recreate_collection(
         collection_name=collection_name,
         vectors_config={
-            "size": embeddings[0][1].shape[0],
+            "size": len(embeddings[0][1]),
             "distance": "Cosine",
         },  # Adjust based on the embedding model's vector size
     )
@@ -221,13 +232,20 @@ def main():
     set_environment_variables()
     repo_link = input("Enter the GitHub URL of the repository:")
 
-    # set_github_repository(repo_link)
-    new_temp_path = "/app/temp-repo"
+    set_github_repository(repo_link)
+
+    # new_temp_path = "/app/temp-repo"
+    new_temp_path = (
+        "C:\\Users\\Brett\\OneDrive\\Desktop\\firearm-research-team\\temp-repo"
+    )
     os.mkdir(new_temp_path)
-    clone_github_repo(repo_link, new_temp_path)
+
+    clone_repo(repo_link, new_temp_path)
     load_and_index_files(new_temp_path)
+
     print("Files loaded and indexed successfully.")
     tools = set_agent_tools()
+    print("Tools loaded successfully.")
     # agent_executor = set_execution_agent(tools)
 
 
