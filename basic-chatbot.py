@@ -1,4 +1,6 @@
 import os
+import subprocess
+import uuid
 from dotenv import load_dotenv
 from langchain.agents import Tool
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -10,6 +12,8 @@ from langchain_openai import ChatOpenAI
 from langchain.vectorstores import Qdrant
 from qdrant_client import QdrantClient
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
+from langchain.document_loaders import DirectoryLoader, NotebookLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 load_dotenv()
 
@@ -26,7 +30,103 @@ def set_environment_variables():
     os.environ["GITHUB_BASE_BRANCH"] = os.getenv("GITHUB_BASE_BRANCH")
 
 
-def set_embeddings():
+def set_github_repository(repo_link):
+    github_url = repo_link
+    repo_name = github_url.split("/")[-1]
+
+
+def clone_github_repo(github_url, local_path):
+    try:
+        subprocess.run(["git", "clone", github_url, local_path], check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to clone repository: {e}")
+        return False
+
+
+def load_documents(repo_path, extensions):
+    documents_dict = {}
+    file_type_counts = {}
+    for ext in extensions:
+        glob_pattern = f"**/*.{ext}"
+        try:
+            loader = None
+            if ext == "ipynb":
+                loader = NotebookLoader(
+                    str(repo_path),
+                    include_outputs=True,
+                    max_output_length=20,
+                    remove_newline=True,
+                )
+            else:
+                loader = DirectoryLoader(repo_path, glob=glob_pattern)
+
+            loaded_documents = loader.load() if callable(loader.load) else []
+            if loaded_documents:
+                file_type_counts[ext] = len(loaded_documents)
+                for doc in loaded_documents:
+                    file_path = doc.metadata["source"]
+                    relative_path = os.path.relpath(file_path, repo_path)
+                    file_id = str(uuid.uuid4())
+                    doc.metadata["source"] = relative_path
+                    doc.metadata["file_id"] = file_id
+
+                    documents_dict[file_id] = doc
+        except Exception as e:
+            print(f"Error loading files with pattern '{glob_pattern}': {e}")
+            continue
+    return documents_dict, file_type_counts
+
+
+def split_documents(documents_dict, chunk_size=800, chunk_overlap=100):
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap
+    )
+    split_documents = []
+    for file_id, original_doc in documents_dict.items():
+        split_docs = text_splitter.split_documents([original_doc])
+        for split_doc in split_docs:
+            split_doc.metadata["file_id"] = original_doc.metadata["file_id"]
+            split_doc.metadata["source"] = original_doc.metadata["source"]
+        split_documents.extend(split_docs)
+    return split_documents
+
+
+def embed_documents(split_documents, embeddings_model):
+    embeddings = []
+    for split_doc in split_documents:
+        content = split_doc.page_content
+        embedding = embeddings_model.embed_query([content])[
+            0
+        ]  # Get the embedding for the document chunk
+        embeddings.append((split_doc, embedding))
+    return embeddings
+
+
+def index_in_qdrant(embeddings, qdrant_client, collection_name):
+    qdrant_client.recreate_collection(
+        collection_name=collection_name,
+        vectors_config={
+            "size": embeddings[0][1].shape[0],
+            "distance": "Cosine",
+        },  # Adjust based on the embedding model's vector size
+    )
+    points = [
+        {
+            "id": split_doc.metadata["file_id"],
+            "vector": embedding.tolist(),
+            "payload": {
+                "source": split_doc.metadata["source"],
+                "file_id": split_doc.metadata["file_id"],
+            },
+        }
+        for split_doc, embedding in embeddings
+    ]
+    qdrant_client.upsert(collection_name=collection_name, points=points)
+    print(f"Indexed {len(points)} document chunks to Qdrant.")
+
+
+def set_embeddings_model():
     # BGE from HF
     model_name = "BAAI/bge-small-en"
     model_kwargs = {"device": "cpu"}
@@ -36,21 +136,58 @@ def set_embeddings():
     )
 
 
-def set_github_repository(repo_link):
-    github_url = repo_link
-    repo_name = github_url.split("/")[-1]
+def load_and_index_files(repo_path):
+    extensions = [
+        "txt",
+        "md",
+        "markdown",
+        "rst",
+        "py",
+        "js",
+        "java",
+        "c",
+        "cpp",
+        "cs",
+        "go",
+        "rb",
+        "php",
+        "scala",
+        "html",
+        "htm",
+        "xml",
+        "json",
+        "yaml",
+        "yml",
+        "ini",
+        "toml",
+        "cfg",
+        "conf",
+        "sh",
+        "bash",
+        "css",
+        "scss",
+        "sql",
+        "gitignore",
+        "dockerignore",
+        "editorconfig",
+        "ipynb",
+    ]
 
+    documents_dict, file_type_counts = load_documents(repo_path, extensions)
+    split_docs = split_documents(documents_dict)
 
-def set_vector_store():
-    # Qdrant
-    client = QdrantClient("localhost", port=6333)
-    embeddings = set_embeddings()
-    vector_store = Qdrant(
-        client=client,
-        collection_name="repo-rover-temp-repo-store",
-        embeddings=embeddings,
-    )
-    return vector_store
+    # Initialize HuggingFaceBgeEmbeddings
+    embeddings_model = set_embeddings_model()
+
+    embeddings = embed_documents(split_docs, embeddings_model)
+
+    # Initialize Qdrant client
+    qdrant_client = QdrantClient(
+        "localhost", port=6333
+    )  # Adjust the host and port as needed
+
+    collection_name = "repo-rover-temp-repo-store"
+    index_in_qdrant(embeddings, qdrant_client, collection_name)
 
 
 def set_agent_tools():
@@ -80,8 +217,19 @@ def set_execution_agent(tools):
     return agent_executor
 
 
-if __name__ == "__main__":
+def main():
     set_environment_variables()
+    repo_link = input("Enter the GitHub URL of the repository:")
+
+    # set_github_repository(repo_link)
+    new_temp_path = "/app/temp-repo"
+    os.mkdir(new_temp_path)
+    clone_github_repo(repo_link, new_temp_path)
+    load_and_index_files(new_temp_path)
+    print("Files loaded and indexed successfully.")
     tools = set_agent_tools()
-    agent_executor = set_execution_agent(tools)
-    agent_executor.invoke("who is the winnner of the us open")
+    # agent_executor = set_execution_agent(tools)
+
+
+if __name__ == "__main__":
+    main()
