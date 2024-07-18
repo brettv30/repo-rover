@@ -38,27 +38,32 @@ services:
     networks:
       - my-network
 
-  model-puller:
-    build: .
-    depends_on:
-      - ollama
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    restart: on-failure
-    networks:
-      - my-network
-
   app:
     build: .
     depends_on:
       - qdrant
       - ollama
-      - model-puller
-    restart: on-failure
     ports:
       - "420:420"
     expose:
       - 420
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - QDRANT_API_KEY=/run/secrets/qdrant_api_key
+      - OPENAI_API_KEY=/run/secrets/openai_api_key
+      - LANGCHAIN_API_KEY=/run/secrets/langchain_api_key
+      - GITHUB_APP_ID=/run/secrets/github_app_id
+      - GITHUB_APP_PRIVATE_KEY=/run/secrets/github_app_private_key
+      - LANGCHAIN_TRACING_V2="true"
+      - LANGCHAIN_PROJECT="repo-rover"
+      - LANGCHAIN_ENDPOINT="https://api.smith.langchain.com"
+    secrets:
+      - qdrant_api_key
+      - openai_api_key
+      - langchain_api_key
+      - github_app_id
+      - github_app_private_key
+    restart: on-failure
     stdin_open: true
     tty: true
     networks:
@@ -71,3 +76,16 @@ configs:
 
 networks:
   my-network:
+
+
+secrets:
+  qdrant_api_key:
+    file: qdrant_api_key.txt
+  openai_api_key:
+    file: openai_api_key.txt
+  langchain_api_key:
+    file: langchain_api_key.txt
+  github_app_id:
+    file: github_app_id.txt
+  github_app_private_key:
+    file: github_app_private_key.txt
