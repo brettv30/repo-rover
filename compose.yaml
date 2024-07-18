@@ -48,6 +48,16 @@ services:
     networks:
       - my-network
 
+  app:
+    build: .
+    depends_on:
+      - qdrant
+      - ollama
+      - model-puller
+    restart: on-failure
+    networks:
+      - my-network
+
 configs:
   qdrant_config:
     content: |

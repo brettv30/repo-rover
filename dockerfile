@@ -6,5 +6,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY pull-ollama-models.py .
+COPY basic-chatbot.py .
+COPY run-scripts.sh .
 
-CMD ["python", "pull-ollama-models.py"]
+# Give execution permissions to the shell script
+RUN chmod +x run-scripts.sh
+
+CMD ["./run-scripts.sh"]
