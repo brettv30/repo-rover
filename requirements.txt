@@ -7,3 +7,4 @@ qdrant_client==1.10.1
 sentence_transformers
 ollama
 unstructured
+unstructured[md]
