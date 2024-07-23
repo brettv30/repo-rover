@@ -11,7 +11,7 @@ from langchain import hub
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
 from langchain_community.vectorstores import Qdrant
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.document_loaders import DirectoryLoader, NotebookLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -115,24 +115,29 @@ def embed_documents(split_documents, embeddings_model):
 
 
 def index_in_qdrant(embeddings, qdrant_client, collection_name):
-    qdrant_client.recreate_collection(
-        collection_name=collection_name,
-        vectors_config={
-            "size": len(embeddings[0][1]),
-            "distance": "Cosine",
-        },  # Adjust based on the embedding model's vector size
-    )
+    if qdrant_client.collection_exists(collection_name):
+        print(f"Collection '{collection_name}' already exists.")
+    else:
+        qdrant_client.create_collection(
+            collection_name=collection_name,
+            vectors_config=models.VectorParams(
+                size=len(embeddings[0][1]),
+                distance=models.Distance.COSINE,
+            ),  # Adjust based on the embedding model's vector size
+        )
+
     points = [
-        {
-            "id": split_doc.metadata["file_id"],
-            "vector": embedding.tolist(),
-            "payload": {
+        models.PointStruct(
+            id=split_doc.metadata["file_id"],
+            vector=embedding.tolist(),
+            payload={
                 "source": split_doc.metadata["source"],
                 "file_id": split_doc.metadata["file_id"],
             },
-        }
+        )
         for split_doc, embedding in embeddings
     ]
+
     qdrant_client.upsert(collection_name=collection_name, points=points)
     print(f"Indexed {len(points)} document chunks to Qdrant.")
 
@@ -194,7 +199,7 @@ def load_and_index_files(repo_path):
 
     # Initialize Qdrant client
     qdrant_client = QdrantClient(
-        "localhost", port=6333
+        "localhost", port=6333, api_key=os.getenv("QDRANT_API_KEY")
     )  # Adjust the host and port as needed
 
     collection_name = "repo-rover-temp-repo-store"
