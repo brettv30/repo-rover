@@ -37,7 +37,7 @@ def pull_model_with_retry(model_name, max_retries=5, delay=60):
 
 
 # List of models to pull
-models = ["phi3:3.8b"]
+models = ["phi3:3.8b", "llama3.1:8b"]
 
 # Pull the models from the Ollama server if not already available
 for model in models:
