@@ -13,7 +13,13 @@ from langchain_openai import ChatOpenAI
 from langchain_community.vectorstores import Qdrant
 from qdrant_client import QdrantClient, models
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from langchain_community.document_loaders import DirectoryLoader, NotebookLoader
+from langchain_community.document_loaders import (
+    DirectoryLoader,
+    NotebookLoader,
+    GitLoader,
+    GitHubIssuesLoader,
+    GithubFileLoader,
+)
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 load_dotenv()
@@ -26,8 +32,10 @@ def set_environment_variables():
     os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
     os.environ["GITHUB_APP_ID"] = os.getenv("GITHUB_APP_ID")
     os.environ["GITHUB_APP_PRIVATE_KEY"] = os.getenv("GITHUB_APP_PRIVATE_KEY")
+    os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"] = os.getenv(
+        "GITHUB_PERSONAL_ACCESS_TOKEN"
+    )
     os.environ["GITHUB_BRANCH"] = "repo-rover-branch"
-    os.environ["GITHUB_BASE_BRANCH"] = "main"
 
 
 def set_github_repository(repo_link):
@@ -36,69 +44,51 @@ def set_github_repository(repo_link):
     os.environ["GITHUB_REPOSITORY"] = repo_name
 
 
-def clone_repo(repo_url, tmpdirname):
-    print(f"Cloning into temporary directory: {tmpdirname}")
+def set_github_base_branch(branch_name):
+    os.environ["GITHUB_BASE_BRANCH"] = branch_name
 
-    # Run the git clone command
+
+def load_github_files(repo_url):
     try:
-        result = subprocess.run(
-            ["git", "clone", repo_url, tmpdirname], capture_output=True, text=True
+        loader = GithubFileLoader(
+            repo=repo_url,
+            access_token=os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"],
         )
-        # Check if the command was successful
-        if result.returncode == 0:
-            print("Repository cloned successfully.")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to clone repository: {e}")
+        return loader.load()
+    except Exception as e:
+        print(f"An error occurred while loading GitHub Repo files: {e}")
         return False
 
 
-def load_documents(repo_path, extensions):
-    documents_dict = {}
-    file_type_counts = {}
-    for ext in extensions:
-        glob_pattern = f"**/*.{ext}"
-        try:
-            loader = None
-            if ext == "ipynb":
-                loader = NotebookLoader(
-                    str(repo_path),
-                    include_outputs=True,
-                    max_output_length=20,
-                    remove_newline=True,
-                )
-            else:
-                loader = DirectoryLoader(repo_path, glob=glob_pattern)
+def load_github_issues(repo_url):
+    try:
+        print("Grabbing issues and Pull Requests from {repo_url}")
+        loader = GitHubIssuesLoader(
+            repo="brettv30/Call-of-Duty-Game-Predictions",
+            access_token=os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+        )
+        return loader.load()
+    except Exception as e:
+        print(f"An error occurred while loading GitHub Issues: {e}")
+        return False
 
-            loaded_documents = loader.load() if callable(loader.load) else []
-            if loaded_documents:
-                file_type_counts[ext] = len(loaded_documents)
-                for doc in loaded_documents:
-                    file_path = doc.metadata["source"]
-                    relative_path = os.path.relpath(file_path, repo_path)
-                    file_id = str(uuid.uuid4())
-                    doc.metadata["source"] = relative_path
-                    doc.metadata["file_id"] = file_id
 
-                    documents_dict[file_id] = doc
-        except Exception as e:
-            print(f"Error loading files with pattern '{glob_pattern}': {e}")
-            continue
-    return documents_dict, file_type_counts
+def load_documents(repo_url, repo_path):
+    try:
+        print(f"Cloning {repo_url} into temporary directory: {repo_path}")
+        loader = GitLoader(
+            clone_url=repo_url,
+            repo_path=repo_path,
+            branch=os.environ["GITHUB_BASE_BRANCH"],
+        )
+        return loader.load()
+    except Exception as e:
+        print(f"Failed to clone repository and load repo contents. Error: {e}")
+        return False
 
 
 def split_documents(documents_dict, chunk_size=800, chunk_overlap=100):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, chunk_overlap=chunk_overlap
-    )
-    split_documents = []
-    for file_id, original_doc in documents_dict.items():
-        split_docs = text_splitter.split_documents([original_doc])
-        for split_doc in split_docs:
-            split_doc.metadata["file_id"] = original_doc.metadata["file_id"]
-            split_doc.metadata["source"] = original_doc.metadata["source"]
-        split_documents.extend(split_docs)
-    return split_documents
+    return True
 
 
 def embed_documents(split_documents, embeddings_model):
@@ -152,45 +142,15 @@ def set_embeddings_model():
     )
 
 
-def load_and_index_files(repo_path):
-    extensions = [
-        "txt",
-        "md",
-        "markdown",
-        "rst",
-        "py",
-        "js",
-        "java",
-        "c",
-        "cpp",
-        "cs",
-        "go",
-        "rb",
-        "php",
-        "scala",
-        "html",
-        "htm",
-        "xml",
-        "json",
-        "yaml",
-        "yml",
-        "ini",
-        "toml",
-        "cfg",
-        "conf",
-        "sh",
-        "bash",
-        "css",
-        "scss",
-        "sql",
-        "gitignore",
-        "dockerignore",
-        "editorconfig",
-        "ipynb",
-    ]
+def load_and_index_files(repo_link, repo_path):
 
-    documents_dict, file_type_counts = load_documents(repo_path, extensions)
-    split_docs = split_documents(documents_dict)
+    docs = load_documents(repo_link, repo_path)
+    # docs = load_github_files(repo_link)
+    # issues = load_github_issues(repo_link)
+    print(docs)
+    # print("-----------------------------")
+    # print(issues)
+    split_docs = split_documents(docs)
 
     # Initialize HuggingFaceBgeEmbeddings
     embeddings_model = set_embeddings_model()
@@ -236,8 +196,10 @@ def set_execution_agent(tools):
 def main():
     set_environment_variables()
     repo_link = input("Enter the GitHub URL of the repository:")
+    branch = input("Enter the name of the base branch:")
 
     set_github_repository(repo_link)
+    set_github_base_branch(branch)
 
     # new_temp_path = "/app/temp-repo"
     new_temp_path = (
@@ -245,8 +207,7 @@ def main():
     )
     os.mkdir(new_temp_path)
 
-    clone_repo(repo_link, new_temp_path)
-    load_and_index_files(new_temp_path)
+    load_and_index_files(repo_link, new_temp_path)
 
     print("Files loaded and indexed successfully.")
     tools = set_agent_tools()
