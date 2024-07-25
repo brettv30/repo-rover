@@ -1,7 +1,4 @@
 import os
-import subprocess
-import tempfile
-import uuid
 from dotenv import load_dotenv
 from langchain.agents import Tool
 from langchain_community.tools import DuckDuckGoSearchRun
@@ -12,15 +9,11 @@ from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
 from langchain_community.vectorstores import Qdrant
 from qdrant_client import QdrantClient, models
-from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.document_loaders import (
     DirectoryLoader,
-    NotebookLoader,
     GitLoader,
-    GitHubIssuesLoader,
-    GithubFileLoader,
 )
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_nomic import NomicEmbeddings
 
 load_dotenv()
 
@@ -32,9 +25,6 @@ def set_environment_variables():
     os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
     os.environ["GITHUB_APP_ID"] = os.getenv("GITHUB_APP_ID")
     os.environ["GITHUB_APP_PRIVATE_KEY"] = os.getenv("GITHUB_APP_PRIVATE_KEY")
-    os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"] = os.getenv(
-        "GITHUB_PERSONAL_ACCESS_TOKEN"
-    )
     os.environ["GITHUB_BRANCH"] = "repo-rover-branch"
 
 
@@ -46,31 +36,6 @@ def set_github_repository(repo_link):
 
 def set_github_base_branch(branch_name):
     os.environ["GITHUB_BASE_BRANCH"] = branch_name
-
-
-def load_github_files(repo_url):
-    try:
-        loader = GithubFileLoader(
-            repo=repo_url,
-            access_token=os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"],
-        )
-        return loader.load()
-    except Exception as e:
-        print(f"An error occurred while loading GitHub Repo files: {e}")
-        return False
-
-
-def load_github_issues(repo_url):
-    try:
-        print("Grabbing issues and Pull Requests from {repo_url}")
-        loader = GitHubIssuesLoader(
-            repo="brettv30/Call-of-Duty-Game-Predictions",
-            access_token=os.environ["GITHUB_PERSONAL_ACCESS_TOKEN"],
-        )
-        return loader.load()
-    except Exception as e:
-        print(f"An error occurred while loading GitHub Issues: {e}")
-        return False
 
 
 def load_documents(repo_url, repo_path):
@@ -133,23 +98,17 @@ def index_in_qdrant(embeddings, qdrant_client, collection_name):
 
 
 def set_embeddings_model():
-    # BGE from HF
-    model_name = "BAAI/bge-small-en"
-    model_kwargs = {"device": "cpu"}
-    encode_kwargs = {"normalize_embeddings": True}
-    return HuggingFaceBgeEmbeddings(
-        model_name=model_name, model_kwargs=model_kwargs, encode_kwargs=encode_kwargs
+    model = NomicEmbeddings(
+        model="nomic-embed-text-v1.5", inference_mode="local", device="gpu"
     )
+
+    return model
 
 
 def load_and_index_files(repo_link, repo_path):
 
     docs = load_documents(repo_link, repo_path)
-    # docs = load_github_files(repo_link)
-    # issues = load_github_issues(repo_link)
     print(docs)
-    # print("-----------------------------")
-    # print(issues)
     split_docs = split_documents(docs)
 
     # Initialize HuggingFaceBgeEmbeddings
