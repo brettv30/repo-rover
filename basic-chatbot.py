@@ -23,6 +23,7 @@ def set_environment_variables():
     os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT")
     os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
     os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+    os.environ["NOMIC_API_KEY"] = os.getenv("NOMIC_API_KEY")
     os.environ["GITHUB_APP_ID"] = os.getenv("GITHUB_APP_ID")
     os.environ["GITHUB_APP_PRIVATE_KEY"] = os.getenv("GITHUB_APP_PRIVATE_KEY")
     os.environ["GITHUB_BRANCH"] = "repo-rover-branch"
