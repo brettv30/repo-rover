@@ -54,6 +54,7 @@ services:
       - LANGCHAIN_API_KEY=/run/secrets/langchain_api_key
       - GITHUB_APP_ID=/run/secrets/github_app_id
       - GITHUB_APP_PRIVATE_KEY=/run/secrets/github_app_private_key
+      - GITHUB_PERSONAL_ACCESS_TOKEN=/run/secrets/github_pat
       - LANGCHAIN_TRACING_V2="true"
       - LANGCHAIN_PROJECT="repo-rover"
       - LANGCHAIN_ENDPOINT="https://api.smith.langchain.com"
@@ -63,6 +64,7 @@ services:
       - langchain_api_key
       - github_app_id
       - github_app_private_key
+      - github_pat
     restart: on-failure
     stdin_open: true
     tty: true
@@ -89,3 +91,5 @@ secrets:
     file: github_app_id.txt
   github_app_private_key:
     file: github_app_private_key.txt
+  github_pat:
+    file: github_pat.txt
