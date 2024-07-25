@@ -201,11 +201,14 @@ def main():
     set_github_repository(repo_link)
     set_github_base_branch(branch)
 
-    # new_temp_path = "/app/temp-repo"
-    new_temp_path = (
-        "C:\\Users\\Brett\\OneDrive\\Desktop\\firearm-research-team\\temp-repo"
-    )
-    os.mkdir(new_temp_path)
+    new_temp_path = "/app/temp-repo"
+    # new_temp_path = (
+    #     "C:\\Users\\Brett\\OneDrive\\Desktop\\firearm-research-team\\temp-repo"
+    # )
+    if os.path.exists(new_temp_path):
+        print(f"{new_temp_path} already exists.")
+    else:
+        os.mkdir(new_temp_path)
 
     load_and_index_files(repo_link, new_temp_path)
 
