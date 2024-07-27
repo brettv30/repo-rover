@@ -49,24 +49,27 @@ services:
       - 420
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - QDRANT_API_KEY=/run/secrets/qdrant_api_key
-      - OPENAI_API_KEY=/run/secrets/openai_api_key
-      - LANGCHAIN_API_KEY=/run/secrets/langchain_api_key
-      - GITHUB_APP_ID=/run/secrets/github_app_id
-      - GITHUB_APP_PRIVATE_KEY=/run/secrets/github_app_private_key
-      - GITHUB_PERSONAL_ACCESS_TOKEN=/run/secrets/github_pat
-      - NOMIC_API_KEY=/run/secrets/nomic_api_key
       - LANGCHAIN_TRACING_V2="true"
       - LANGCHAIN_PROJECT="repo-rover"
       - LANGCHAIN_ENDPOINT="https://api.smith.langchain.com"
+    volumes:
+      - .:/app
+      - /app/.venv
     secrets:
       - qdrant_api_key
       - nomic_api_key
+      - github_repo
       - openai_api_key
       - langchain_api_key
       - github_app_id
       - github_app_private_key
       - github_pat
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+        reservations:
+          cpus: '8'
     restart: on-failure
     stdin_open: true
     tty: true
@@ -84,16 +87,18 @@ networks:
 
 secrets:
   qdrant_api_key:
-    file: qdrant_api_key.txt
+    file: secrets/qdrant_api_key.txt
   openai_api_key:
-    file: openai_api_key.txt
+    file: secrets/openai_api_key.txt
   langchain_api_key:
-    file: langchain_api_key.txt
+    file: secrets/langchain_api_key.txt
   github_app_id:
-    file: github_app_id.txt
+    file: secrets/github_app_id.txt
   github_app_private_key:
-    file: github_app_private_key.txt
+    file: secrets/github_app_private_key.pem
   github_pat:
-    file: github_pat.txt
+    file: secrets/github_pat.txt
   nomic_api_key:
-    file: nomic_api_key.txt
+    file: secrets/nomic_api_key.txt
+  github_repo:
+    file: secrets/github_repo.txt

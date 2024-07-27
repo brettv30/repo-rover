@@ -11,8 +11,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY pull-ollama-models.py .
 COPY basic-chatbot.py .
 COPY run-scripts.sh .
+COPY entrypoint.sh .
 
 # Give execution permissions to the shell script
-RUN chmod +x run-scripts.sh
+RUN chmod +x run-scripts.sh entrypoint.sh
 
-CMD ["./run-scripts.sh"]
+# Use an environment variable to determine whether to run in development or production mode
+ENV RUN_Mode=development
+
+ENTRYPOINT ["./entrypoint.sh"]
