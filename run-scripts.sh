@@ -5,4 +5,4 @@ set -e
 python pull-ollama-models.py
 
 # Run the second script
-python basic-chatbot.py
+python initial-llama-bot.py

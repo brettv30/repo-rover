@@ -9,6 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY pull-ollama-models.py .
+COPY initial-llama-bot.py .
 COPY basic-chatbot.py .
 COPY run-scripts.sh .
 COPY entrypoint.sh .
