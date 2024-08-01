@@ -332,10 +332,9 @@ def generate_directory_summary(documents: List[Document]) -> str:
     return result["output_text"]
 
 
-def create_chain(prompt_value, llm):
+def create_chain(prompt_value: str, llm):
     # Map
-    prompt_template = prompt_value
-    prompt = PromptTemplate.from_template(prompt_template)
+    prompt = PromptTemplate.from_template(prompt_value)
     result = prompt | llm
 
     return result
