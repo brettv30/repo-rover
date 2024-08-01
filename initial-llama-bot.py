@@ -16,6 +16,9 @@ from langchain_community.document_loaders import (
     UnstructuredFileLoader,
     PythonLoader,
 )
+from langchain.chains.mapreduce import MapReduceDocumentsChain
+from langchain.chains.combine_documents.reduce import ReduceDocumentsChain
+from langchain.chains.combine_documents.stuff import StuffDocumentsChain
 import logging
 from typing import List, Optional
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -108,15 +111,11 @@ class PythonDocumentSplitter(TextSplitter):
         # Parse the Python code
         tree = ast.parse(text)
 
-        # Extract imports and global variables
-        global_chunk = ""
-        for node in tree.body:
-            if isinstance(
-                node, (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)
-            ):
-                global_chunk += ast.get_source_segment(text, node) + "\n"
-
-        if global_chunk:
+        if global_chunk := "".join(
+            ast.get_source_segment(text, node) + "\n"
+            for node in tree.body
+            if isinstance(node, (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign))
+        ):
             documents.append(
                 Document(
                     page_content=global_chunk.strip(),
@@ -171,8 +170,7 @@ class PythonDocumentSplitter(TextSplitter):
 
         # Extract main execution block
         main_pattern = re.compile(r'if\s+__name__\s*==\s*["\']__main__["\']\s*:')
-        main_match = main_pattern.search(text)
-        if main_match:
+        if main_match := main_pattern.search(text):
             main_block = text[main_match.start() :]
             documents.append(
                 Document(
@@ -182,9 +180,6 @@ class PythonDocumentSplitter(TextSplitter):
             )
 
         return documents
-
-
-# Usage
 
 
 def split_python_document(document: Document) -> List[Document]:
@@ -242,7 +237,7 @@ def process_and_embed_documents(
     save_faiss_index(vectorstore, index_path)
     print("Saved FAISS Index")
 
-    return vectorstore
+    return vectorstore, split_docs
 
 
 def embed_documents(documents):
@@ -279,6 +274,71 @@ def cleanup_temp_directory(temp_dir):
     import shutil
 
     shutil.rmtree(temp_dir)
+
+
+def generate_directory_summary(documents: List[Document]) -> str:
+
+    # Define LLM
+    llm = ChatOllama(
+        model="llama3.1:8b-instruct-q2_K",
+        temperature=0.1,
+        num_gpu=1,
+        verbose=True,
+    )
+
+    map_chain = create_chain(
+        """The following is a set of documents
+    {docs}
+    Based on this list of docs, please identify the main themes 
+    Helpful Answer:""",
+        llm,
+    )
+    reduce_chain = create_chain(
+        """The following is set of summaries:
+    {docs}
+    Take these and distill it into a final, consolidated summary of the main themes. 
+    Helpful Answer:""",
+        llm,
+    )
+    # Takes a list of documents, combines them into a single string, and passes this to an LLMChain
+    combine_documents_chain = StuffDocumentsChain(
+        llm_chain=reduce_chain, document_variable_name="docs"
+    )
+
+    # Combines and iteratively reduces the mapped documents
+    reduce_documents_chain = ReduceDocumentsChain(
+        # This is final chain that is called.
+        combine_documents_chain=combine_documents_chain,
+        # If documents exceed context for `StuffDocumentsChain`
+        collapse_documents_chain=combine_documents_chain,
+        # The maximum number of tokens to group documents into.
+        token_max=4000,
+    )
+
+    # Combining documents by mapping a chain over them, then combining results
+    map_reduce_chain = MapReduceDocumentsChain(
+        # Map chain
+        llm_chain=map_chain,
+        # Reduce chain
+        reduce_documents_chain=reduce_documents_chain,
+        # The variable name in the llm_chain to put the documents in
+        document_variable_name="docs",
+        # Return the results of the map steps in the output
+        return_intermediate_steps=False,
+    )
+
+    result = map_reduce_chain.invoke(documents)
+
+    return result["output_text"]
+
+
+def create_chain(prompt_value, llm):
+    # Map
+    prompt_template = prompt_value
+    prompt = PromptTemplate.from_template(prompt_template)
+    result = prompt | llm
+
+    return result
 
 
 prompt = PromptTemplate.from_template(
@@ -342,11 +402,11 @@ QUESTION: {question}
 
 if __name__ == "__main__":
 
-    # directory_path = input("Enter the directory path to process:")
+    directory_path = input("Enter the directory path to process:")
     ignore_input = input(
         "Enter directories to ignore (comma-separared, press Enter for none): "
     )
-    directory_path = "C:\\Users\\Brett\\OneDrive\\Desktop\\fun-with-transformers"
+    # directory_path = ""
 
     temp_dir = create_temp_directory()
     logger.info(f"Created temporary directory: {temp_dir}")
@@ -363,7 +423,7 @@ if __name__ == "__main__":
 
     try:
         # Process documents and create FAISS index (do this only when new documents are added)
-        vectorstore = process_and_embed_documents(
+        vectorstore, split_docs = process_and_embed_documents(
             directory_path, temp_dir, ignore_directories
         )
         logger.info(f"Created FAISS index at: {temp_dir}")
@@ -371,6 +431,10 @@ if __name__ == "__main__":
         # Later, when you need to use the embeddings:
         loaded_vectorstore = load_faiss_index(temp_dir)
         print("Loaded FAISS Index")
+
+        summary = generate_directory_summary(split_docs)
+        print("DIRECTORY SUMMARY")
+        print(summary)
 
         # Now you can use loaded_vectorstore for similarity search, etc.
         query = "How are Key, Query, and Value defined in the documents?"
