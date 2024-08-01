@@ -9,6 +9,7 @@ from langchain_community.document_loaders import (
     TextLoader,
     PDFMinerLoader,
     CSVLoader,
+    UnstructuredMarkdownLoader,
     UnstructuredWordDocumentLoader,
     UnstructuredPowerPointLoader,
     UnstructuredHTMLLoader,
@@ -19,6 +20,11 @@ import logging
 from typing import List, Optional
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import os
+import ast
+import re
+from typing import List
+from langchain.text_splitter import TextSplitter
+from langchain.schema import Document
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,6 +46,7 @@ def get_loader_class(file_extension):
         ".py": PythonLoader,
         ".pdf": PDFMinerLoader,
         ".csv": CSVLoader,
+        ".md": UnstructuredMarkdownLoader,
         ".doc": UnstructuredWordDocumentLoader,
         ".docx": UnstructuredWordDocumentLoader,
         ".ppt": UnstructuredPowerPointLoader,
@@ -53,10 +60,13 @@ def load_documents(directory_path: str, ignore_directories: Optional[List[str]] 
     if ignore_directories is None:
         ignore_directories = []
 
+    ignore_files = [".gitignore", "LICENSE"]
+
     documents = []
     for root, dirs, files in os.walk(directory_path, topdown=True):
         # Remove ignored directories from dirs to prevent os.walk from traversing them
         dirs[:] = [d for d in dirs if d not in ignore_directories]
+        files[:] = [f for f in files if f not in ignore_files]
 
         # Check if the current directory should be ignored
         if any(ignore_dir in root.split(os.sep) for ignore_dir in ignore_directories):
@@ -86,12 +96,130 @@ def load_documents(directory_path: str, ignore_directories: Optional[List[str]] 
     return documents
 
 
+class PythonDocumentSplitter(TextSplitter):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def split_text(self, document: Document) -> List[Document]:
+        text = document.page_content
+        source = document.metadata["source"]
+        documents = []
+
+        # Parse the Python code
+        tree = ast.parse(text)
+
+        # Extract imports and global variables
+        global_chunk = ""
+        for node in tree.body:
+            if isinstance(
+                node, (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)
+            ):
+                global_chunk += ast.get_source_segment(text, node) + "\n"
+
+        if global_chunk:
+            documents.append(
+                Document(
+                    page_content=global_chunk.strip(),
+                    metadata={"source": source, "type": "global"},
+                )
+            )
+
+        # Extract classes and their methods
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                class_content = ast.get_source_segment(text, node)
+                documents.append(
+                    Document(
+                        page_content=class_content,
+                        metadata={
+                            "source": source,
+                            "type": "class",
+                            "name": node.name,
+                        },
+                    )
+                )
+
+                # Extract methods within the class
+                for child in node.body:
+                    if isinstance(child, ast.FunctionDef):
+                        method_content = ast.get_source_segment(text, child)
+                        documents.append(
+                            Document(
+                                page_content=method_content,
+                                metadata={
+                                    "source": source,
+                                    "type": "method",
+                                    "class": node.name,
+                                },
+                            )
+                        )
+
+        # Extract standalone functions
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef):
+                function_content = ast.get_source_segment(text, node)
+                documents.append(
+                    Document(
+                        page_content=function_content,
+                        metadata={
+                            "source": source,
+                            "type": "function",
+                            "name": node.name,
+                        },
+                    )
+                )
+
+        # Extract main execution block
+        main_pattern = re.compile(r'if\s+__name__\s*==\s*["\']__main__["\']\s*:')
+        main_match = main_pattern.search(text)
+        if main_match:
+            main_block = text[main_match.start() :]
+            documents.append(
+                Document(
+                    page_content=main_block,
+                    metadata={"source": source, "type": "main_execution_block"},
+                )
+            )
+
+        return documents
+
+
+# Usage
+
+
+def split_python_document(document: Document) -> List[Document]:
+    splitter = PythonDocumentSplitter()
+    return splitter.split_text(document)
+
+
+def split_multiple_python_documents(documents: List[Document]) -> List[Document]:
+    all_split_documents = []
+    for doc in documents:
+        all_split_documents.extend(split_python_document(doc))
+    return all_split_documents
+
+
 def split_documents(documents, chunk_size=1000, chunk_overlap=200):
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
     )
-    return text_splitter.split_documents(documents)
+
+    py_docs = []
+    other_docs = []
+
+    for doc in documents:
+        if ".py" in doc.metadata["source"]:
+            py_docs.append(doc)
+        else:
+            other_docs.append(doc)
+
+    py_split_docs = split_multiple_python_documents(py_docs)
+    generic_split_docs = text_splitter.split_documents(other_docs)
+
+    all_split_docs = py_split_docs + generic_split_docs
+
+    return all_split_docs
 
 
 def process_and_embed_documents(
@@ -214,11 +342,11 @@ QUESTION: {question}
 
 if __name__ == "__main__":
 
-    directory_path = input("Enter the directory path to process:")
+    # directory_path = input("Enter the directory path to process:")
     ignore_input = input(
         "Enter directories to ignore (comma-separared, press Enter for none): "
     )
-    # directory_path = ""
+    directory_path = "C:\\Users\\Brett\\OneDrive\\Desktop\\fun-with-transformers"
 
     temp_dir = create_temp_directory()
     logger.info(f"Created temporary directory: {temp_dir}")
