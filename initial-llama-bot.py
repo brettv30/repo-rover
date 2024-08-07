@@ -1,9 +1,12 @@
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables.base import RunnableSequence
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
 import tempfile
-from typing import List
+from dotenv import load_dotenv
 from typing_extensions import TypedDict
 from langchain_community.document_loaders import (
     TextLoader,
@@ -16,9 +19,6 @@ from langchain_community.document_loaders import (
     UnstructuredFileLoader,
     PythonLoader,
 )
-from langchain.chains.mapreduce import MapReduceDocumentsChain
-from langchain.chains.combine_documents.reduce import ReduceDocumentsChain
-from langchain.chains.combine_documents.stuff import StuffDocumentsChain
 import logging
 from typing import List, Optional
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -200,21 +200,23 @@ def split_documents(documents, chunk_size=1000, chunk_overlap=200):
         chunk_overlap=chunk_overlap,
     )
 
-    py_docs = []
-    other_docs = []
-
+    all_docs = []
     for doc in documents:
-        if ".py" in doc.metadata["source"]:
-            py_docs.append(doc)
+        print(type(doc))
+        print(doc)
+        if len(doc.page_content) > 5000:
+            if ".py" in doc.metadata["source"]:
+                logger.info("Splitting Python Doc")
+                py_split_doc = split_python_document(doc)
+                all_docs.extend(iter(py_split_doc))
+            else:
+                logger.info("Splitting non-Python doc")
+                generic_split_docs = text_splitter.split_text(doc)
+                all_docs.append(generic_split_docs)
         else:
-            other_docs.append(doc)
+            all_docs.append(doc)
 
-    py_split_docs = split_multiple_python_documents(py_docs)
-    generic_split_docs = text_splitter.split_documents(other_docs)
-
-    all_split_docs = py_split_docs + generic_split_docs
-
-    return all_split_docs
+    return all_docs
 
 
 def process_and_embed_documents(
@@ -225,17 +227,17 @@ def process_and_embed_documents(
     chunk_overlap=200,
 ):
     raw_documents = load_documents(directory_path, ignore_directories)
-    print("Loaded Documents")
+    logger.info(f"Loaded Documents to {directory_path}")
     split_docs = split_documents(raw_documents, chunk_size, chunk_overlap)
-    print("Split Documents")
+    logger.info("Split Documents Completed")
 
     # Embed documents and create FAISS index
     vectorstore = embed_documents(split_docs)
-    print("Created FAISS vectorstore")
+    logger.info("Created FAISS vectorstore")
 
     # Save the FAISS index
     save_faiss_index(vectorstore, index_path)
-    print("Saved FAISS Index")
+    logger.info(f"Saved FAISS Index at {index_path}")
 
     return vectorstore, split_docs
 
@@ -276,66 +278,65 @@ def cleanup_temp_directory(temp_dir):
     shutil.rmtree(temp_dir)
 
 
-def generate_directory_summary(documents: List[Document]) -> str:
+async def summarize_documents(chain, documents):
+    with ProcessPoolExecutor() as executor:
+        loop = asyncio.get_event_loop()
+        tasks = [
+            loop.run_in_executor(executor, chain.invoke, doc.page_content)
+            for doc in documents
+        ]
+        return await asyncio.gather(*tasks)
+
+
+async def generate_directory_summary(documents: List[Document]) -> str:
 
     # Define LLM
-    llm = ChatOllama(
-        model="llama3.1:8b-instruct-q2_K",
-        temperature=0.1,
-        num_gpu=1,
+    small_llm = ChatOllama(
+        model="qwen2:1.5b-instruct-q4_K_M",
+        temperature=0.2,
+        num_gpu=2,
         verbose=True,
     )
+    logger.info("Set small summarizer LLM")
+
+    # Define LLM
+    big_llm = ChatOllama(
+        model="gemma2:2b-instruct-q8_0 ",
+        temperature=0.5,
+        num_gpu=2,
+        verbose=True,
+    )
+    logger.info("Set big summarizer LLM")
 
     map_chain = create_chain(
-        """The following is a set of documents
+        """You are a concise summarizer. You write concise summaries of documents that extract only the main parts of the document. 
+    The following is a document
     {docs}
-    Based on this list of docs, please identify the main themes 
+    Please identify the main theme or themes of this document. Be concise.
     Helpful Answer:""",
-        llm,
+        small_llm,
     )
+    logger.info("Set map chain")
+
     reduce_chain = create_chain(
         """The following is set of summaries:
     {docs}
-    Take these and distill it into a final, consolidated summary of the main themes. 
+    Take these and distill it into a final, consolidated summary of the main themes.
     Helpful Answer:""",
-        llm,
+        big_llm,
     )
-    # Takes a list of documents, combines them into a single string, and passes this to an LLMChain
-    combine_documents_chain = StuffDocumentsChain(
-        llm_chain=reduce_chain, document_variable_name="docs"
-    )
+    logger.info("Set reduce chain")
 
-    # Combines and iteratively reduces the mapped documents
-    reduce_documents_chain = ReduceDocumentsChain(
-        # This is final chain that is called.
-        combine_documents_chain=combine_documents_chain,
-        # If documents exceed context for `StuffDocumentsChain`
-        collapse_documents_chain=combine_documents_chain,
-        # The maximum number of tokens to group documents into.
-        token_max=4000,
-    )
+    individual_summaries = await summarize_documents(map_chain, documents)
+    final_summary = reduce_chain.invoke(individual_summaries)
 
-    # Combining documents by mapping a chain over them, then combining results
-    map_reduce_chain = MapReduceDocumentsChain(
-        # Map chain
-        llm_chain=map_chain,
-        # Reduce chain
-        reduce_documents_chain=reduce_documents_chain,
-        # The variable name in the llm_chain to put the documents in
-        document_variable_name="docs",
-        # Return the results of the map steps in the output
-        return_intermediate_steps=False,
-    )
-
-    result = map_reduce_chain.invoke(documents)
-
-    return result["output_text"]
+    return final_summary
 
 
-def create_chain(prompt_value: str, llm):
+def create_chain(prompt_value: str, llm: ChatOllama) -> RunnableSequence:
     # Map
     prompt = PromptTemplate.from_template(prompt_value)
-    result = prompt | llm
+    result = prompt | llm | StrOutputParser()
 
     return result
 
@@ -399,7 +400,20 @@ QUESTION: {question}
     """
 )
 
+
+def set_environment_variables():
+    load_dotenv()
+    logger.info("Loading Langsmith environment variables")
+    os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
+    os.environ["LANGCHAIN_ENDPOINT"] = os.getenv("LANGCHAIN_ENDPOINT")
+    os.environ["LANGCHAIN_PROJECT"] = os.getenv("LANGCHAIN_PROJECT")
+    os.environ["LANGCHAIN_TRACING_V2"] = os.getenv("LANGCHAIN_TRACING_V2")
+    logger.info("Langsmith environment variables loaded")
+
+
 if __name__ == "__main__":
+
+    set_environment_variables()
 
     directory_path = input("Enter the directory path to process:")
     ignore_input = input(
@@ -429,16 +443,16 @@ if __name__ == "__main__":
 
         # Later, when you need to use the embeddings:
         loaded_vectorstore = load_faiss_index(temp_dir)
-        print("Loaded FAISS Index")
+        logger.info("Loading FAISS Index into memory")
 
-        summary = generate_directory_summary(split_docs)
-        print("DIRECTORY SUMMARY")
+        summary = asyncio.run(generate_directory_summary(split_docs))
+        logger.info("Created directory summary")
+        print("DIRECTORY SUMMARY -------------------------")
         print(summary)
 
         # Now you can use loaded_vectorstore for similarity search, etc.
-        query = "How are Key, Query, and Value defined in the documents?"
-        results = loaded_vectorstore.similarity_search(query)
-        print(results)
+        # query = "How are Key, Query, and Value defined in the documents?"
+        # results = loaded_vectorstore.similarity_search(query)
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
     finally:
