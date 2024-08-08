@@ -566,10 +566,8 @@ if __name__ == "__main__":
 
     set_environment_variables()
 
-    directories_to_check = []
-
     directory_path = input("Enter the directory path to process:")
-    directories_to_check.append(directory_path)
+    directories_to_check = [directory_path]
     ignore_input = input(
         "Enter any sub-directories to ignore (comma-separated, press Enter for none): "
     )
