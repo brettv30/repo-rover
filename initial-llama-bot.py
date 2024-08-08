@@ -4,7 +4,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables.base import RunnableSequence
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 import asyncio
-from concurrent.futures import ProcessPoolExecutor
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import tempfile
 from dotenv import load_dotenv
 from typing_extensions import TypedDict
@@ -97,6 +98,77 @@ def load_documents(directory_path: str, ignore_directories: Optional[List[str]] 
                 logger.error(f"Error loading file {file_path}: {str(e)}")
 
     return documents
+
+
+def load_file(file_path):
+    file_extension = os.path.splitext(file_path)[1]
+    loader_class = get_loader_class(file_extension)
+    logger.info(f"Loading {file_path} with {loader_class.__name__}")
+    try:
+        loader = loader_class(file_path)
+        return loader.load()
+    except Exception as e:
+        logger.error(f"Error loading file {file_path}: {str(e)}")
+        return []
+
+
+def load_documents_sync(
+    directory_path: str, ignore_directories: Optional[List[str]] = None
+):
+    if ignore_directories is None:
+        ignore_directories = []
+
+    ignore_files = [".gitignore", "LICENSE", "log.txt"]
+
+    documents = []
+    with ThreadPoolExecutor() as executor:
+        file_load_futures = []
+        for root, dirs, files in os.walk(directory_path, topdown=True):
+            dirs[:] = [d for d in dirs if d not in ignore_directories]
+            files[:] = [f for f in files if f not in ignore_files]
+
+            if any(
+                ignore_dir in root.split(os.sep) for ignore_dir in ignore_directories
+            ):
+                logger.info(f"Skipping ignored directory: {root}")
+                continue
+
+            for file in files:
+                file_path = os.path.join(root, file)
+
+                if any(
+                    ignore_dir in file_path.split(os.sep)
+                    for ignore_dir in ignore_directories
+                ):
+                    logger.info(f"Skipping file in ignored directory: {file_path}")
+                    continue
+
+                file_load_futures.append(executor.submit(load_file, file_path))
+
+        for future in file_load_futures:
+            documents.extend(future.result())
+
+    return documents
+
+
+async def load_documents(
+    directory_path: str, ignore_directories: Optional[List[str]] = None
+):
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        documents = await loop.run_in_executor(
+            executor, load_documents_sync, directory_path, ignore_directories
+        )
+    return documents
+
+
+async def load_all_documents(
+    directories: List[str], ignore_directories: Optional[List[str]] = None
+):
+    tasks = [load_documents(directory, ignore_directories) for directory in directories]
+    all_documents = await asyncio.gather(*tasks)
+    # Flatten the list of lists
+    return [doc for sublist in all_documents for doc in sublist]
 
 
 class PythonDocumentSplitter(TextSplitter):
@@ -202,8 +274,6 @@ def split_documents(documents, chunk_size=1000, chunk_overlap=200):
 
     all_docs = []
     for doc in documents:
-        print(type(doc))
-        print(doc)
         if len(doc.page_content) > 5000:
             if ".py" in doc.metadata["source"]:
                 logger.info("Splitting Python Doc")
@@ -211,8 +281,14 @@ def split_documents(documents, chunk_size=1000, chunk_overlap=200):
                 all_docs.extend(iter(py_split_doc))
             else:
                 logger.info("Splitting non-Python doc")
-                generic_split_docs = text_splitter.split_text(doc)
-                all_docs.append(generic_split_docs)
+                if type(doc) == Document:
+                    all_docs.append(doc)
+                else:
+                    generic_split_docs = text_splitter.split_text(doc)
+                    if type(generic_split_docs) == List:
+                        all_docs.extend(iter(generic_split_docs))
+                    else:
+                        all_docs.append(generic_split_docs)
         else:
             all_docs.append(doc)
 
@@ -226,20 +302,39 @@ def process_and_embed_documents(
     chunk_size=1000,
     chunk_overlap=200,
 ):
-    raw_documents = load_documents(directory_path, ignore_directories)
-    logger.info(f"Loaded Documents to {directory_path}")
-    split_docs = split_documents(raw_documents, chunk_size, chunk_overlap)
-    logger.info("Split Documents Completed")
+    try:
+        raw_documents = asyncio.run(
+            load_all_documents(directory_path, ignore_directories)
+        )
+        logger.info(f"Loaded Documents to {directory_path}")
+        split_docs = split_documents(raw_documents, chunk_size, chunk_overlap)
+        logger.info("Split Documents Completed")
 
-    # Embed documents and create FAISS index
-    vectorstore = embed_documents(split_docs)
-    logger.info("Created FAISS vectorstore")
+        # Embed documents and create FAISS index
+        vectorstore = embed_documents(split_docs)
+        if vectorstore is None:
+            raise ValueError("Failed to create FAISS vectorstore")
 
-    # Save the FAISS index
-    save_faiss_index(vectorstore, index_path)
-    logger.info(f"Saved FAISS Index at {index_path}")
+        logger.info("Created FAISS vectorstore")
 
-    return vectorstore, split_docs
+        # Save the FAISS index
+        save_faiss_index(vectorstore, index_path)
+        logger.info(f"Saved FAISS Index at {index_path}")
+
+        return vectorstore, split_docs
+    except Exception as e:
+        logger.error(f"An error occurred in process_and_embed_documents: {str(e)}")
+        raise
+
+
+def flatten_list(nested_list):
+    flat_list = []
+    for item in nested_list:
+        if isinstance(item, list):
+            flat_list.extend(flatten_list(item))
+        else:
+            flat_list.append(item)
+    return flat_list
 
 
 def embed_documents(documents):
@@ -249,6 +344,54 @@ def embed_documents(documents):
     vectorstore = FAISS.from_documents(documents, embeddings)
 
     return vectorstore
+
+
+# def embed_documents(documents):
+#     embeddings = OllamaEmbeddings(model="nomic-embed-text")
+
+#     flat_docs = flatten_list(documents)
+#     logger.info(f"Total documents to embed: {len(flat_docs)}")
+
+#     all_embeddings = []
+
+#     for i, doc in enumerate(flat_docs):
+#         if not isinstance(doc, Document):
+#             logger.error(f"Unexpected document type at index {i}: {type(doc)}")
+#             continue
+
+#         # Debug: Check document content and metadata
+#         logger.debug(
+#             f"Document index: {i}, content: {doc.page_content[:100]}..."
+#         )  # Log first 100 characters
+#         logger.debug(f"Document metadata: {doc.metadata}")
+
+#         try:
+#             embedding = embeddings.embed_query(doc.page_content)
+#             logger.debug(f"Embedding shape at index {i}: {np.shape(embedding)}")
+#             all_embeddings.append(embedding)
+#         except Exception as e:
+#             logger.error(f"Error embedding document at index {i}: {str(e)}")
+
+#     # Check if all embeddings have the same shape
+#     try:
+#         # Ensure all embeddings are numpy arrays and log their shapes
+#         embedding_shapes = [np.shape(emb) for emb in all_embeddings]
+#         logger.info(f"All embedding shapes: {embedding_shapes}")
+
+#         # Convert to a numpy array
+#         all_embeddings = np.array(all_embeddings)
+#         logger.info(f"Embeddings shape: {all_embeddings.shape}")
+#     except Exception as e:
+#         logger.error(f"Error in embeddings shape: {str(e)}")
+
+#     # Create a FAISS index from the embeddings
+#     try:
+#         vectorstore = FAISS.from_embeddings(all_embeddings, flat_docs)
+#     except Exception as e:
+#         logger.error(f"Error creating FAISS index: {str(e)}")
+#         return None
+
+#     return vectorstore
 
 
 def save_faiss_index(vectorstore, index_path):
@@ -292,7 +435,7 @@ async def generate_directory_summary(documents: List[Document]) -> str:
 
     # Define LLM
     small_llm = ChatOllama(
-        model="qwen2:1.5b-instruct-q4_K_M",
+        model="qwen2:0.5b-instruct",
         temperature=0.2,
         num_gpu=2,
         verbose=True,
@@ -321,13 +464,21 @@ async def generate_directory_summary(documents: List[Document]) -> str:
     reduce_chain = create_chain(
         """The following is set of summaries:
     {docs}
-    Take these and distill it into a final, consolidated summary of the main themes.
+    Take these and distill it into a final, consolidated summary of the main themes. Each summary is about a different aspect of files in a directory so always reference 'the directory' in your response, never 'the summaries.'
     Helpful Answer:""",
         big_llm,
     )
     logger.info("Set reduce chain")
 
-    individual_summaries = await summarize_documents(map_chain, documents)
+    # Process documents in batches if necessary
+    batch_size = 10  # Adjust based on your hardware capabilities
+    individual_summaries = []
+    for i in range(0, len(documents), batch_size):
+        batch = documents[i : i + batch_size]
+        summaries = await summarize_documents(map_chain, batch)
+        individual_summaries.extend(summaries)
+
+    # individual_summaries = await summarize_documents(map_chain, documents)
     final_summary = reduce_chain.invoke(individual_summaries)
 
     return final_summary
@@ -415,11 +566,13 @@ if __name__ == "__main__":
 
     set_environment_variables()
 
+    directories_to_check = []
+
     directory_path = input("Enter the directory path to process:")
+    directories_to_check.append(directory_path)
     ignore_input = input(
-        "Enter directories to ignore (comma-separared, press Enter for none): "
+        "Enter any sub-directories to ignore (comma-separated, press Enter for none): "
     )
-    # directory_path = ""
 
     temp_dir = create_temp_directory()
     logger.info(f"Created temporary directory: {temp_dir}")
@@ -429,7 +582,7 @@ if __name__ == "__main__":
     )
 
     # Add common virtual environment directory names if not specified by the user
-    common_venv_names = ["venv", "env", ".venv", ".env", ".git"]
+    common_venv_names = ["venv", "env", ".venv", ".env", ".git", "__pycache__"]
     ignore_directories.extend(
         [venv for venv in common_venv_names if venv not in ignore_directories]
     )
@@ -437,7 +590,7 @@ if __name__ == "__main__":
     try:
         # Process documents and create FAISS index (do this only when new documents are added)
         vectorstore, split_docs = process_and_embed_documents(
-            directory_path, temp_dir, ignore_directories
+            directories_to_check, temp_dir, ignore_directories
         )
         logger.info(f"Created FAISS index at: {temp_dir}")
 
@@ -445,14 +598,24 @@ if __name__ == "__main__":
         loaded_vectorstore = load_faiss_index(temp_dir)
         logger.info("Loading FAISS Index into memory")
 
+        retriever = loaded_vectorstore.as_retriever(
+            search_type="mmr", search_kwargs={"k": 10}
+        )
+        logger.info("Set FAISS Vector Store as a Retriever")
+
         summary = asyncio.run(generate_directory_summary(split_docs))
         logger.info("Created directory summary")
-        print("DIRECTORY SUMMARY -------------------------")
-        print(summary)
 
-        # Now you can use loaded_vectorstore for similarity search, etc.
-        # query = "How are Key, Query, and Value defined in the documents?"
-        # results = loaded_vectorstore.similarity_search(query)
+        print(
+            "I have finished preparing everything related to understanding that directory. If you want to exit type '/bye' otherwise...."
+        )
+        event = input("What would you like to do?")
+        while True:
+            print("mama we made it")
+            event = input("Anything else?")
+            if event.lower() == "/bye":
+                print("Bye Bye!")
+                break
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
     finally:
