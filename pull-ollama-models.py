@@ -38,7 +38,10 @@ def pull_model_with_retry(model_name, max_retries=5, delay=60):
 
 # List of models to pull
 models = [
-    "phi3:3.8b-mini-128k-instruct-q3_K_S",
+    "granite-code:3b-instruct-q6_K",
+    "bge-large",
+    "qwen2:1.5b-instruct",
+    "qwen2:0.5b-instruct",
     "llama3.1:8b-instruct-q2_K",
     "nomic-embed-text",
 ]
