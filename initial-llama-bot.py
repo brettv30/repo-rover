@@ -550,10 +550,10 @@ def write_code_tests(incoming_code: str) -> str:
 
     code_tester_chain = create_chain(
         """You are a seasoned software developer that writes impeccable code tests.
-    Write some code tests for the following code snippet:
-    {snippet}
-    Please write an entire testing file with all code within standard code snippet indicators (```) at the beginning and end of the code block. 
-    Helpful Answer:""",
+Write some code tests for the following code snippet:
+{snippet}
+Please write an entire testing file with all code within standard code snippet indicators (```) at the beginning and end of the code block. 
+Helpful Answer:""",
         code_tester_llm,
     )
     logger.info("Set Code Tester Chain")
