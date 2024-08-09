@@ -4,6 +4,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables.base import RunnableSequence
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 import asyncio
+import ast
 import numpy as np
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import tempfile
@@ -101,6 +102,11 @@ def load_documents(directory_path: str, ignore_directories: Optional[List[str]] 
 
 
 def load_file(file_path):
+    # Check if the file is empty
+    if os.path.getsize(file_path) == 0:
+        logger.info(f"Skipping empty file: {file_path}")
+        return []
+
     file_extension = os.path.splitext(file_path)[1]
     loader_class = get_loader_class(file_extension)
     logger.info(f"Loading {file_path} with {loader_class.__name__}")
@@ -118,7 +124,7 @@ def load_documents_sync(
     if ignore_directories is None:
         ignore_directories = []
 
-    ignore_files = [".gitignore", "LICENSE", "log.txt"]
+    ignore_files = [".gitignore", "LICENSE"]
 
     documents = []
     with ThreadPoolExecutor() as executor:
@@ -275,20 +281,31 @@ def split_documents(documents, chunk_size=1000, chunk_overlap=200):
     all_docs = []
     for doc in documents:
         if len(doc.page_content) > 5000:
-            if ".py" in doc.metadata["source"]:
-                logger.info("Splitting Python Doc")
-                py_split_doc = split_python_document(doc)
-                all_docs.extend(iter(py_split_doc))
+            # Splitting up python & regular file parsing
+            # if ".py" in doc.metadata["source"]:
+            #     logger.info("Splitting Python Doc")
+            #     py_split_doc = split_python_document(doc)
+            #     all_docs.extend(iter(py_split_doc))
+            # else:
+            #     logger.info("Splitting non-Python doc")
+            #     if type(doc) == Document:
+            #         all_docs.append(doc)
+            #     else:
+            #         generic_split_docs = text_splitter.split_text(doc)
+            #         if type(generic_split_docs) == List:
+            #             all_docs.extend(iter(generic_split_docs))
+            #         else:
+            #             all_docs.append(generic_split_docs)
+            # Keeping all parsing the same
+            if type(doc) == Document:
+                all_docs.append(doc)
             else:
-                logger.info("Splitting non-Python doc")
-                if type(doc) == Document:
-                    all_docs.append(doc)
+                generic_split_docs = text_splitter.split_text(doc)
+                if type(generic_split_docs) == List:
+                    all_docs.extend(iter(generic_split_docs))
                 else:
-                    generic_split_docs = text_splitter.split_text(doc)
-                    if type(generic_split_docs) == List:
-                        all_docs.extend(iter(generic_split_docs))
-                    else:
-                        all_docs.append(generic_split_docs)
+                    all_docs.append(generic_split_docs)
+
         else:
             all_docs.append(doc)
 
@@ -338,7 +355,7 @@ def flatten_list(nested_list):
 
 
 def embed_documents(documents):
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    embeddings = OllamaEmbeddings(model="bge-large")
 
     # Create a FAISS index from the documents
     vectorstore = FAISS.from_documents(documents, embeddings)
@@ -435,7 +452,7 @@ async def generate_directory_summary(documents: List[Document]) -> str:
 
     # Define LLM
     small_llm = ChatOllama(
-        model="qwen2:0.5b-instruct",
+        model="qwen2:1.5b-instruct",
         temperature=0.2,
         num_gpu=2,
         verbose=True,
@@ -490,6 +507,93 @@ def create_chain(prompt_value: str, llm: ChatOllama) -> RunnableSequence:
     result = prompt | llm | StrOutputParser()
 
     return result
+
+
+def generate_code(code_request: str) -> str:
+    # Define LLM
+    code_generate_llm = ChatOllama(
+        model="granite-code:3b-instruct-q6_K",
+        temperature=0.2,
+        num_gpu=2,
+        verbose=True,
+    )
+    logger.info("Set Code Generation LLM")
+
+    code_generate_chain = create_chain(
+        """You are a seasoned software developer that writes impeccable code.
+    You always write code that is properly formatted according to the standards set forth by that programming language.
+    You apply the necessary amount of comments that way someone new can look at your code and understand your intentions.
+    The following is a request from your project manager:
+    {request}
+    Please write code to help them with their request
+    Helpful Answer:""",
+        code_generate_llm,
+    )
+    logger.info("Set code chain")
+
+    code_result = code_generate_chain.invoke(code_request)
+    clean_code_result = extract_code_snippet(code_result)
+    clean_code_reqs = extract_code_dependencies(clean_code_result)
+
+    return code_result, clean_code_result, clean_code_reqs
+
+
+def write_code_tests(incoming_code: str) -> str:
+    # Define LLM
+    code_tester_llm = ChatOllama(
+        model="granite-code:3b-instruct-q6_K",
+        temperature=0,
+        num_gpu=2,
+        verbose=True,
+    )
+    logger.info("Set Code Testing LLM")
+
+    code_tester_chain = create_chain(
+        """You are a seasoned software developer that writes impeccable code tests.
+    Write some code tests for the following code snippet:
+    {snippet}
+    Please write an entire testing file with all code within standard code snippet indicators (```) at the beginning and end of the code block. 
+    Helpful Answer:""",
+        code_tester_llm,
+    )
+    logger.info("Set Code Tester Chain")
+
+    code_tests = code_tester_chain.invoke(incoming_code)
+    clean_code_tests = extract_code_snippet(code_tests)
+    clean_test_reqs = extract_code_dependencies(clean_code_tests)
+
+    return code_tests, clean_code_tests, clean_test_reqs
+
+
+def extract_code_snippet(str_with_code: str) -> str:
+
+    pattern = r"```(?:\w+)?\s*(.*?)\s*```"
+    pattern2 = r"^(.*?)```"
+    if result := re.search(pattern, str_with_code, re.DOTALL):
+        logger.info("Extracted Code with pattern 1")
+        code_snippet = result[1]
+        return code_snippet
+    elif result := re.search(pattern2, str_with_code, re.DOTALL):
+        logger.info("Extracted Code with pattern 2")
+        code_snippet = result[1]
+        return code_snippet
+    else:
+        logger.info("Did not extract code")
+        return "No code block found"
+
+
+def extract_code_dependencies(code_snippet: str) -> list:
+    dependencies = []
+    parsed_code = ast.parse(code_snippet)
+    for node in ast.walk(parsed_code):
+        if isinstance(node, ast.Import):
+            logger.info("Extracted Import Dependency")
+            dependencies.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            logger.info(f"Extracted {node.module} Dependency")
+            dependencies.append(node.module)
+
+    return dependencies
 
 
 prompt = PromptTemplate.from_template(
@@ -601,24 +705,45 @@ if __name__ == "__main__":
         )
         logger.info("Set FAISS Vector Store as a Retriever")
 
-        summary = asyncio.run(generate_directory_summary(split_docs))
-        logger.info("Created directory summary")
-
-        print(
-            "I have finished preparing everything related to understanding that directory. If you want to exit type '/bye' otherwise...."
+        generated_response, generated_code, code_dependencies = generate_code(
+            "write python code that gets a response from the following api: https://www.boredapi.com/api/activity"
         )
-        event = input("What would you like to do?")
-        while True:
-            print("mama we made it")
-            event = input("Anything else?")
-            if event.lower() == "/bye":
-                print("Bye Bye!")
-                break
-    except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
+        print("RESPONSE------------")
+        print(generated_response)
+        print("CODE-----------------")
+        print(generated_code)
+        print("DEPENDENCIES---------------")
+        print(code_dependencies)
+
+        generated_test_response, generated_code_tests, test_dependencies = (
+            write_code_tests(generated_code)
+        )
+        print("RESPONSE------------")
+        print(generated_test_response)
+        print("CODE-----------------")
+        print(generated_code_tests)
+        print("DEPENDENCIES---------------")
+        print(test_dependencies)
+
+        #     summary = asyncio.run(generate_directory_summary(split_docs))
+        #     logger.info("Created directory summary")
+
+        #     print(
+        #         "I have finished preparing everything related to understanding that directory. If you want to exit type '/bye' otherwise...."
+        #     )
+        #     event = input("What would you like to do?")
+        #     while True:
+        #         print(summary)
+        #         event = input("Anything else?")
+        #         if event.lower() == "/bye":
+        #             print("Bye Bye!")
+        #             break
+        # except Exception as e:
+        # logger.error(f"An error occurred: {str(e)}")
     finally:
         cleanup_temp_directory(temp_dir)
         logger.info(f"Cleaned up temporary directory: {temp_dir}")
+
     # llm = ChatOllama(
     #     model="llama3.1:8b-instruct-q2_K",
     #     temperature=0.1,
