@@ -1,15 +1,9 @@
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.runnables.base import RunnableSequence
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables.base import RunnableSequence
-from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
-import asyncio
-import ast
-import numpy as np
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-import tempfile
-from dotenv import load_dotenv
-from typing_extensions import TypedDict
 from langchain_community.document_loaders import (
     TextLoader,
     PDFMinerLoader,
@@ -21,15 +15,19 @@ from langchain_community.document_loaders import (
     UnstructuredFileLoader,
     PythonLoader,
 )
-import logging
-from typing import List, Optional
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-import os
-import ast
-import re
-from typing import List
+from langchain_core.prompts import PromptTemplate
 from langchain.text_splitter import TextSplitter
 from langchain.schema import Document
+from typing import List, Optional
+from dotenv import load_dotenv
+from typing import List
+import tempfile
+import logging
+import asyncio
+import ast
+import ast
+import os
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,47 +56,7 @@ def get_loader_class(file_extension):
         ".pptx": UnstructuredPowerPointLoader,
         ".html": UnstructuredHTMLLoader,
     }
-    return extension_mapping.get(file_extension.lower(), UnstructuredFileLoader)
-
-
-def load_documents(directory_path: str, ignore_directories: Optional[List[str]] = None):
-    if ignore_directories is None:
-        ignore_directories = []
-
-    ignore_files = [".gitignore", "LICENSE"]
-
-    documents = []
-    for root, dirs, files in os.walk(directory_path, topdown=True):
-        # Remove ignored directories from dirs to prevent os.walk from traversing them
-        dirs[:] = [d for d in dirs if d not in ignore_directories]
-        files[:] = [f for f in files if f not in ignore_files]
-
-        # Check if the current directory should be ignored
-        if any(ignore_dir in root.split(os.sep) for ignore_dir in ignore_directories):
-            logger.info(f"Skipping ignored directory: {root}")
-            continue  # Skip this directory
-
-        for file in files:
-            file_path = os.path.join(root, file)
-
-            # Double-check that the file is not in an ignored directory
-            if any(
-                ignore_dir in file_path.split(os.sep)
-                for ignore_dir in ignore_directories
-            ):
-                logger.info(f"Skipping file in ignored directory: {file_path}")
-                continue
-
-            file_extension = os.path.splitext(file)[1]
-            loader_class = get_loader_class(file_extension)
-            logger.info(f"Loading {file_path} with {loader_class.__name__}")
-            try:
-                loader = loader_class(file_path)
-                documents.extend(loader.load())
-            except Exception as e:
-                logger.error(f"Error loading file {file_path}: {str(e)}")
-
-    return documents
+    return extension_mapping.get(file_extension.lower())
 
 
 def load_file(file_path):
@@ -109,6 +67,12 @@ def load_file(file_path):
 
     file_extension = os.path.splitext(file_path)[1]
     loader_class = get_loader_class(file_extension)
+
+    # Skip the file if its extension is not supported
+    if loader_class is None:
+        logger.info(f"Skipping unsupported file type: {file_path}")
+        return []
+
     logger.info(f"Loading {file_path} with {loader_class.__name__}")
     try:
         loader = loader_class(file_path)
