@@ -4,6 +4,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.runnables.base import RunnableSequence
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.document_loaders import (
     TextLoader,
     PDFMinerLoader,
@@ -28,6 +29,14 @@ import ast
 import ast
 import os
 import re
+from typing import Union
+from langchain_core.pydantic_v1 import BaseModel, Field
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import tool
+from typing import Literal
+import operator
+from typing import Annotated, List, Tuple, TypedDict
+from langgraph.graph import StateGraph, START
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -327,54 +336,6 @@ def embed_documents(documents):
     return vectorstore
 
 
-# def embed_documents(documents):
-#     embeddings = OllamaEmbeddings(model="nomic-embed-text")
-
-#     flat_docs = flatten_list(documents)
-#     logger.info(f"Total documents to embed: {len(flat_docs)}")
-
-#     all_embeddings = []
-
-#     for i, doc in enumerate(flat_docs):
-#         if not isinstance(doc, Document):
-#             logger.error(f"Unexpected document type at index {i}: {type(doc)}")
-#             continue
-
-#         # Debug: Check document content and metadata
-#         logger.debug(
-#             f"Document index: {i}, content: {doc.page_content[:100]}..."
-#         )  # Log first 100 characters
-#         logger.debug(f"Document metadata: {doc.metadata}")
-
-#         try:
-#             embedding = embeddings.embed_query(doc.page_content)
-#             logger.debug(f"Embedding shape at index {i}: {np.shape(embedding)}")
-#             all_embeddings.append(embedding)
-#         except Exception as e:
-#             logger.error(f"Error embedding document at index {i}: {str(e)}")
-
-#     # Check if all embeddings have the same shape
-#     try:
-#         # Ensure all embeddings are numpy arrays and log their shapes
-#         embedding_shapes = [np.shape(emb) for emb in all_embeddings]
-#         logger.info(f"All embedding shapes: {embedding_shapes}")
-
-#         # Convert to a numpy array
-#         all_embeddings = np.array(all_embeddings)
-#         logger.info(f"Embeddings shape: {all_embeddings.shape}")
-#     except Exception as e:
-#         logger.error(f"Error in embeddings shape: {str(e)}")
-
-#     # Create a FAISS index from the embeddings
-#     try:
-#         vectorstore = FAISS.from_embeddings(all_embeddings, flat_docs)
-#     except Exception as e:
-#         logger.error(f"Error creating FAISS index: {str(e)}")
-#         return None
-
-#     return vectorstore
-
-
 def save_faiss_index(vectorstore, index_path):
     # Save the FAISS index
     vectorstore.save_local(index_path)
@@ -412,7 +373,9 @@ async def summarize_documents(chain, documents):
         return await asyncio.gather(*tasks)
 
 
-async def generate_directory_summary(documents: List[Document]) -> str:
+@tool
+async def agenerate_directory_summary(documents: List[Document]) -> str:
+    """Use this tool to generate summaries of directories"""
 
     # Define LLM
     small_llm = ChatOllama(
@@ -473,10 +436,12 @@ def create_chain(prompt_value: str, llm: ChatOllama) -> RunnableSequence:
     return result
 
 
+@tool
 def generate_code(code_request: str) -> str:
+    """Use this tool to generate code"""
     # Define LLM
     code_generate_llm = ChatOllama(
-        model="granite-code:3b-instruct-q6_K",
+        model="llama3.1:8b-instruct-q2_K ",
         temperature=0.2,
         num_gpu=2,
         verbose=True,
@@ -502,10 +467,12 @@ def generate_code(code_request: str) -> str:
     return code_result, clean_code_result, clean_code_reqs
 
 
+@tool
 def write_code_tests(incoming_code: str) -> str:
+    """Use this tool to write tests for code that is developed"""
     # Define LLM
     code_tester_llm = ChatOllama(
-        model="granite-code:3b-instruct-q6_K",
+        model="llama3.1:8b-instruct-q2_K ",
         temperature=0,
         num_gpu=2,
         verbose=True,
@@ -527,6 +494,13 @@ Helpful Answer:""",
     clean_test_reqs = extract_code_dependencies(clean_code_tests)
 
     return code_tests, clean_code_tests, clean_test_reqs
+
+
+@tool
+def retrieve_docs(query):
+    """Use this tool to retrieve documents related to the user's query"""
+    docs = retriever.invoke(query)
+    return docs
 
 
 def extract_code_snippet(str_with_code: str) -> str:
@@ -560,66 +534,6 @@ def extract_code_dependencies(code_snippet: str) -> list:
     return dependencies
 
 
-prompt = PromptTemplate.from_template(
-    """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
-
-Environment: ipython
-Tools: brave_search, wolfram_alpha
-
-Cutting Knowledge Date: December 2023
-Today Date: 23 Jul 2024
-
-# Tool Instructions
-- Always execute python code in messages that you share.
-- When looking for real time information use relevant functions if available else fallback to brave_search
-
-You have access to the following functions:
-
-Use the function 'validate_user' to: validate user using historical addresses
-{{
-  "name": "validate_user",
-  "description": "validate user using historical addresses",
-  "parameters": {{
-    "user_id": {{
-      "param_type": "int",
-      "description": "User ID",
-      "required": true
-    }},
-    "addresses": {{
-       "param_type": "List",
-       "description": "The user's previous addresses.",
-       "required": true
-    }}
-  }}
-}}
-
-If a you choose to call a function ONLY reply in the following format:
-<{{start_tag}}={{function_name}}>{{parameters}}{{end_tag}}
-where
-
-start_tag => `<function`
-parameters => a JSON dict with the function argument name as key and function argument value as value.
-end_tag => `</function>`
-
-Here is an example,
-<function=example_function_name>{{"example_name": "example_value"}}</function>
-
-Reminder:
-- Function calls MUST follow the specified format
-- Required parameters MUST be specified
-- Only call one function at a time
-- Put the entire function call reply on one line"
-- Always add your sources when using search results to answer the user query
-
-You are a helpful assistant.<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-QUESTION: {question} 
- <|eot_id|><|start_header_id|>assistant<|end_header_id|>                    
-    """
-)
-
-
 def set_environment_variables():
     load_dotenv()
     logger.info("Loading Langsmith environment variables")
@@ -630,98 +544,262 @@ def set_environment_variables():
     logger.info("Langsmith environment variables loaded")
 
 
+def set_execution_agent():
+    tools = [
+        generate_code,
+        write_code_tests,
+        agenerate_directory_summary,
+        retrieve_docs,
+    ]
+    llm = ChatOllama(
+        model="llama3.1:8b-instruct-q2_K",
+        temperature=0.5,
+        num_gpu=2,
+        verbose=True,
+    )
+    executor = create_react_agent(llm, tools, messages_modifier=prompt)
+    return executor
+
+
+class Plan(BaseModel):
+    """Plan to follow in future"""
+
+    steps: List[str] = Field(
+        description="different steps to follow, should be in sorted order"
+    )
+
+
+def set_planning_agent():
+    planner_prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """For the given objective, come up with a simple step by step plan. \
+    This plan should involve individual tasks, that if executed correctly will yield the correct answer. Do not add any superfluous steps. \
+    The result of the final step should be the final answer. Make sure that each step has all the information needed - do not skip steps.""",
+            ),
+            ("placeholder", "{messages}"),
+        ]
+    )
+    planner = planner_prompt | ChatOllama(
+        model="llama3.1:8b-instruct-q2_K", temperature=0
+    ).with_structured_output(pydantic_object=Plan)
+
+    return planner
+
+
+class PlanExecute(TypedDict):
+    input: str
+    plan: List[str]
+    past_steps: Annotated[List[Tuple], operator.add]
+    response: str
+
+
+async def execute_step(state: PlanExecute):
+    agent_executor = set_execution_agent()
+    plan = state["plan"]
+    plan_str = "\n".join(f"{i+1}. {step}" for i, step in enumerate(plan))
+    task = plan[0]
+    task_formatted = f"""For the following plan:
+{plan_str}\n\nYou are tasked with executing step {1}, {task}."""
+    agent_response = await agent_executor.ainvoke(
+        {"messages": [("user", task_formatted)]}
+    )
+    return {
+        "past_steps": (task, agent_response["messages"][-1].content),
+    }
+
+
+async def plan_step(state: PlanExecute):
+    planner = set_planning_agent()
+    plan = await planner.ainvoke({"messages": [("user", state["input"])]})
+    return {"plan": plan.steps}
+
+
+async def replan_step(state: PlanExecute):
+    replanner = set_replanning_agent()
+    output = await replanner.ainvoke(state)
+    if isinstance(output.action, Response):
+        return {"response": output.action.response}
+    else:
+        return {"plan": output.action.steps}
+
+
+def should_end(state: PlanExecute) -> Literal["agent", "__end__"]:
+    if "response" in state and state["response"]:
+        return "__end__"
+    else:
+        return "agent"
+
+
+class Response(BaseModel):
+    """Response to user."""
+
+    response: str
+
+
+class Act(BaseModel):
+    """Action to perform."""
+
+    action: Union[Response, Plan] = Field(
+        description="Action to perform. If you want to respond to user, use Response. "
+        "If you need to further use tools to get the answer, use Plan."
+    )
+
+
+def set_replanning_agent():
+
+    replanner_prompt = ChatPromptTemplate.from_template(
+        """For the given objective, come up with a simple step by step plan. \
+    This plan should involve individual tasks, that if executed correctly will yield the correct answer. Do not add any superfluous steps. \
+    The result of the final step should be the final answer. Make sure that each step has all the information needed - do not skip steps.
+
+    Your objective was this:
+    {input}
+
+    Your original plan was this:
+    {plan}
+
+    You have currently done the follow steps:
+    {past_steps}
+
+    Update your plan accordingly. If no more steps are needed and you can return to the user, then respond with that. Otherwise, fill out the plan. Only add steps to the plan that still NEED to be done. Do not return previously done steps as part of the plan."""
+    )
+
+    replanner = replanner_prompt | ChatOllama(
+        model="llama3.1:8b-instruct-q2_K", temperature=0
+    ).with_structured_output(Act)
+
+    return replanner
+
+
+def set_agent_graph():
+    workflow = StateGraph(PlanExecute)
+
+    # Add the plan node
+    workflow.add_node("planner", plan_step)
+
+    # Add the execution step
+    workflow.add_node("agent", execute_step)
+
+    # Add a replan node
+    workflow.add_node("replan", replan_step)
+
+    workflow.add_edge(START, "planner")
+
+    # From plan we go to agent
+    workflow.add_edge("planner", "agent")
+
+    # From agent, we replan
+    workflow.add_edge("agent", "replan")
+
+    workflow.add_conditional_edges(
+        "replan",
+        # Next, we pass in the function that will determine which node is called next.
+        should_end,
+    )
+
+    # Finally, we compile it!
+    # This compiles it into a LangChain Runnable,
+    # meaning you can use it as you would any other runnable
+    app = workflow.compile()
+
+    return app
+
+
 if __name__ == "__main__":
 
-    set_environment_variables()
+    app = set_agent_graph()
+    config = {"recursion_limit": 50}
+    inputs = {"input": "what is the hometown of the 2024 Australia open winner?"}
+    async for event in app.astream(inputs, config=config):
+        for k, v in event.items():
+            if k != "__end__":
+                print(v)
 
-    directory_path = input("Enter the directory path to process:")
-    directories_to_check = [directory_path]
-    ignore_input = input(
-        "Enter any sub-directories to ignore (comma-separated, press Enter for none): "
-    )
+    # planner = set_planning_agent()
 
-    temp_dir = create_temp_directory()
-    logger.info(f"Created temporary directory: {temp_dir}")
-
-    ignore_directories = (
-        [dir.strip() for dir in ignore_input.split(",")] if ignore_input else []
-    )
-
-    # Add common virtual environment directory names if not specified by the user
-    common_venv_names = ["venv", "env", ".venv", ".env", ".git", "__pycache__"]
-    ignore_directories.extend(
-        [venv for venv in common_venv_names if venv not in ignore_directories]
-    )
-
-    try:
-        # Process documents and create FAISS index (do this only when new documents are added)
-        vectorstore, split_docs = process_and_embed_documents(
-            directories_to_check, temp_dir, ignore_directories
-        )
-        logger.info(f"Created FAISS index at: {temp_dir}")
-
-        # Later, when you need to use the embeddings:
-        loaded_vectorstore = load_faiss_index(temp_dir)
-        logger.info("Loading FAISS Index into memory")
-
-        retriever = loaded_vectorstore.as_retriever(
-            search_type="mmr", search_kwargs={"k": 10}
-        )
-        logger.info("Set FAISS Vector Store as a Retriever")
-
-        generated_response, generated_code, code_dependencies = generate_code(
-            "write python code that gets a response from the following api: https://www.boredapi.com/api/activity"
-        )
-        print("RESPONSE------------")
-        print(generated_response)
-        print("CODE-----------------")
-        print(generated_code)
-        print("DEPENDENCIES---------------")
-        print(code_dependencies)
-
-        generated_test_response, generated_code_tests, test_dependencies = (
-            write_code_tests(generated_code)
-        )
-        print("RESPONSE------------")
-        print(generated_test_response)
-        print("CODE-----------------")
-        print(generated_code_tests)
-        print("DEPENDENCIES---------------")
-        print(test_dependencies)
-
-        #     summary = asyncio.run(generate_directory_summary(split_docs))
-        #     logger.info("Created directory summary")
-
-        #     print(
-        #         "I have finished preparing everything related to understanding that directory. If you want to exit type '/bye' otherwise...."
-        #     )
-        #     event = input("What would you like to do?")
-        #     while True:
-        #         print(summary)
-        #         event = input("Anything else?")
-        #         if event.lower() == "/bye":
-        #             print("Bye Bye!")
-        #             break
-        # except Exception as e:
-        # logger.error(f"An error occurred: {str(e)}")
-    finally:
-        cleanup_temp_directory(temp_dir)
-        logger.info(f"Cleaned up temporary directory: {temp_dir}")
-
-    # llm = ChatOllama(
-    #     model="llama3.1:8b-instruct-q2_K",
-    #     temperature=0.1,
-    #     num_gpu=1,
-    #     verbose=True,
-    # ).bind_tools([validate_user])
-
-    # chain = prompt | llm
-
-    # response = chain.invoke(
+    # response = planner.invoke(
     #     {
-    #         "question": "Could you validate user 123? They previously lived at 123 Fake St in Boston MA and 234 Pretend Boulevard in Houston TX."
+    #         "messages": [
+    #             ("user", "what is the hometown of the current Australia open winner?")
+    #         ]
     #     }
     # )
-
     # print(response)
-    # print(response.tool_calls)
+
+    # set_environment_variables()
+
+    # directory_path = input("Enter the directory path to process:")
+    # directories_to_check = [directory_path]
+    # ignore_input = input(
+    #     "Enter any sub-directories to ignore (comma-separated, press Enter for none): "
+    # )
+
+    # temp_dir = create_temp_directory()
+    # logger.info(f"Created temporary directory: {temp_dir}")
+
+    # ignore_directories = (
+    #     [dir.strip() for dir in ignore_input.split(",")] if ignore_input else []
+    # )
+
+    # # Add common virtual environment directory names if not specified by the user
+    # common_venv_names = ["venv", "env", ".venv", ".env", ".git", "__pycache__"]
+    # ignore_directories.extend(
+    #     [venv for venv in common_venv_names if venv not in ignore_directories]
+    # )
+
+    # try:
+    #     # Process documents and create FAISS index (do this only when new documents are added)
+    #     vectorstore, split_docs = process_and_embed_documents(
+    #         directories_to_check, temp_dir, ignore_directories
+    #     )
+    #     logger.info(f"Created FAISS index at: {temp_dir}")
+
+    #     # Later, when you need to use the embeddings:
+    #     loaded_vectorstore = load_faiss_index(temp_dir)
+    #     logger.info("Loading FAISS Index into memory")
+
+    #     retriever = loaded_vectorstore.as_retriever(
+    #         search_type="mmr", search_kwargs={"k": 10}
+    #     )
+    #     logger.info("Set FAISS Vector Store as a Retriever")
+
+    #     generated_response, generated_code, code_dependencies = generate_code(
+    #         "Create a rock, paper, scissors program"
+    #     )
+    #     print("RESPONSE------------")
+    #     print(generated_response)
+    #     print("CODE-----------------")
+    #     print(generated_code)
+    #     print("DEPENDENCIES---------------")
+    #     print(code_dependencies)
+
+    #     generated_test_response, generated_code_tests, test_dependencies = (
+    #         write_code_tests(generated_code)
+    #     )
+    #     print("RESPONSE------------")
+    #     print(generated_test_response)
+    #     print("CODE-----------------")
+    #     print(generated_code_tests)
+    #     print("DEPENDENCIES---------------")
+    #     print(test_dependencies)
+
+    #     #     summary = asyncio.run(generate_directory_summary(split_docs))
+    #     #     logger.info("Created directory summary")
+
+    #     #     print(
+    #     #         "I have finished preparing everything related to understanding that directory. If you want to exit type '/bye' otherwise...."
+    #     #     )
+    #     #     event = input("What would you like to do?")
+    #     #     while True:
+    #     #         print(summary)
+    #     #         event = input("Anything else?")
+    #     #         if event.lower() == "/bye":
+    #     #             print("Bye Bye!")
+    #     #             break
+    #     # except Exception as e:
+    #     # logger.error(f"An error occurred: {str(e)}")
+    # finally:
+    #     cleanup_temp_directory(temp_dir)
+    #     logger.info(f"Cleaned up temporary directory: {temp_dir}")
